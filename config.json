@@ -1,0 +1,11 @@
+
+{
+    "db_path": "./deribit_trades.db",
+    "deribit": {
+        "client_id": "<client_id>",
+        "client_secret": "<client_secret>",
+        "client_url": "wss://www.deribit.com/ws/api/v2"
+    }
+}
+
+

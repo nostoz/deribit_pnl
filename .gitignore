@@ -1,0 +1,5 @@
+dpnl
+excluded
+__pycache__
+deribit_trades.db
+config_remote.json
