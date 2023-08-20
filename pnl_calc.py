@@ -10,6 +10,15 @@ class PnLCalculator():
                        deribit_wrapper:DeribitApiWrapper,
                        db_wrapper:DBWrapper,
                        start_range, end_range) -> None:
+        """
+        Initialize the PnLCalculator.
+
+        Args:
+            deribit_wrapper (DeribitApiWrapper): Instance of DeribitApiWrapper.
+            db_wrapper (DBWrapper): Instance of DBWrapper.
+            start_range (datetime): Start date for PnL calculations.
+            end_range (datetime): End date for PnL calculations.
+        """
         self.config = config
         self.trades = pd.DataFrame()
         self.deribit_wrapper = deribit_wrapper
@@ -21,6 +30,15 @@ class PnLCalculator():
         self.instrument_live_prices = {}
 
     def _calc_expiry(self, instrument_name):
+        """
+        Calculate the details for the given instrument.
+
+        Args:
+            instrument_name (str): Name of the instrument.
+
+        Returns:
+            tuple: Tuple containing trade type, expiry, strike, and call/put.
+        """
         strike = None
         cp = None
         if 'PERP' in instrument_name:
@@ -37,10 +55,21 @@ class PnLCalculator():
             return 'option', convert_from_deribit_date(instrument_breakdown[1], as_string=False), strike, cp
     
     def _get_direction(self, side):
+        """
+        Extract the direction from the given side.
+
+        Args:
+            side (str): Side of the trade.
+
+        Returns:
+            str: Direction of the trade (buy/sell).
+        """
         return side.split(' ')[1]
                    
     def _load_trades(self):
-
+        """
+        Loads trades and transaction data from the database and Deribit API.
+        """
         async def load_transactions_from_deribit():
             for ccy in self.config['deribit']['currencies']:
                 transactions_from_deribit = await self.deribit_wrapper.get_transaction_log(currency=ccy, count=1000)
@@ -59,9 +88,24 @@ class PnLCalculator():
         self.trades = transactions
 
     def _get_trades(self):
+        """
+        Returns the list of trades.
+
+        Returns:
+            trades: DataFrame containing trade data.
+        """
         return self.trades
     
     async def _calc_settlement_price(self, instrument):
+        """
+        Calculates the settlement price for a given instrument.
+
+        Args:
+            instrument: Name of the instrument.
+
+        Returns:
+            settlement_price: Calculated settlement price.
+        """
         trade_type, expiry, strike, cp = self._calc_expiry(instrument)
         result = await self.deribit_wrapper.get_delivery_prices((f"{instrument.split('-')[0]}_usd").lower(),
                                                                     offset=(datetime.now()-expiry).days)
@@ -76,6 +120,9 @@ class PnLCalculator():
             raise Exception('trade type not supported')
 
     async def update_live_prices(self):
+        """
+        Updates live prices for instruments and currencies.
+        """
         instruments = self.trades['instrument_name'].unique()
         ccy_list = self.trades['currency'].unique()
         tasks_instruments = [self._update_instrument_price(instrument) for instrument in instruments]
@@ -102,6 +149,15 @@ class PnLCalculator():
             self.instrument_live_prices[ccy] = ccy_px
 
     async def _update_instrument_price(self, instrument):
+        """
+        Updates the live price of a specific instrument.
+
+        Args:
+            instrument: Name of the instrument.
+
+        Returns:
+            price: Updated live price.
+        """
         _, expiry, _, _ = self._calc_expiry(instrument)
 
         if isinstance(expiry, datetime) and expiry < datetime.now():
@@ -112,11 +168,32 @@ class PnLCalculator():
             return result['result']['mark_price']
 
     async def _update_ccy_price(self, ccy):
+        """
+        Updates the live price of a specific currency.
+
+        Args:
+            ccy: Currency code.
+
+        Returns:
+            price: Updated currency price.
+        """
         result = await self.deribit_wrapper.get_index_price(f"{ccy.lower()}_usd")
         return result['result']['index_price']
 
 
     def usd_pnl_by_trade(self, trade, include_fees=True):
+        """
+        Calculates USD PnL for a trade.
+
+        Args:
+            trade: Trade information.
+            include_fees: Flag to include fees in PnL calculation.
+
+        Returns:
+            usd_pnl: Calculated USD PnL.
+            usd_pnl_including_fees: Calculated USD PnL including fees.
+            usd_fees: Calculated USD fees.
+        """
         usd_pnl = None
         if trade['trade_type'] == 'option':
             usd_pnl = (self.instrument_live_prices[trade['instrument_name']] * self.instrument_live_prices[trade['currency']] \
@@ -129,10 +206,10 @@ class PnLCalculator():
         usd_fees = trade['commission'] * trade['index_price']
         return usd_pnl, usd_pnl - usd_fees, usd_fees
     
-    def usd_fee_by_trade(self, trade):
-        fee_usd = None
-    
     def update_pnl(self):
+        """
+        Updates PnL for all trades.
+        """
         asyncio.run(self.update_live_prices())
 
         for idx, trade in self.trades.iterrows():

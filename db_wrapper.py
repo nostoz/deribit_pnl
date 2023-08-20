@@ -5,6 +5,12 @@ import pandas as pd
 
 class DBWrapper():
     def __init__(self, db_path) -> None:
+        """
+        Initializes the DBWrapper instance and establishes a connection to the database.
+
+        Args:
+            db_path (str): Path to the SQLite database file.
+        """
         self.logger = set_logger(name=__name__, log_file='db_wrapper.log', log_level='INFO')
 
         self.db_path = db_path
@@ -13,6 +19,9 @@ class DBWrapper():
         self._create_tables()          
 
     def _create_tables(self):
+        """
+        Creates the necessary tables if they don't exist in the database.
+        """
         create_table_sql = '''
             CREATE TABLE IF NOT EXISTS trades (
                 trade_seq INTEGER,
@@ -94,12 +103,34 @@ class DBWrapper():
         self.conn.commit()
 
     def save_to_db(self, df, table_name, if_exists='append', index=False):
+        """
+        Saves a DataFrame to the specified database table.
+
+        Args:
+            df (pd.DataFrame): DataFrame to be saved.
+            table_name (str): Name of the database table.
+            if_exists (str): Behavior when the table already exists ('fail', 'replace', 'append').
+            index (bool): Whether to include the index in the table.
+
+        Returns:
+            None
+        """
         df = self._exclude_existing_records_from_df(df, table_name)
         df = self._convert_dtypes(df)
         df.to_sql(name=table_name, con=self.conn, if_exists=if_exists, index=index)
         self.conn.commit()
 
     def _get_unique_keys(self, table_name):
+        """
+        Retrieves primary keys and all key combinations from a table.
+
+        Args:
+            table_name (str): Name of the database table.
+
+        Returns:
+            primary_keys (list): List of primary key column names.
+            all_keys_combinations (list): List of tuples representing existing key combinations.
+        """
         self.cursor.execute(f"SELECT * FROM pragma_table_info('{table_name}') WHERE pk")
         table_info = self.cursor.fetchall()
 
@@ -116,11 +147,30 @@ class DBWrapper():
         return primary_keys, all_keys_combinations
     
     def _convert_dtypes(self, df):
+        """
+        Converts DataFrame column data types for compatibility.
+
+        Args:
+            df (pd.DataFrame): DataFrame to be converted.
+
+        Returns:
+            df (pd.DataFrame): Converted DataFrame.
+        """
         for column in df.columns:
             df[column] = df[column].apply(convert_to_int_or_str)
         return df
     
     def _exclude_existing_records_from_df(self, df, table_name):
+        """
+        Excludes existing records from the DataFrame based on primary keys.
+
+        Args:
+            df (pd.DataFrame): DataFrame to be filtered.
+            table_name (str): Name of the database table.
+
+        Returns:
+            df_filtered (pd.DataFrame): Filtered DataFrame without existing records.
+        """
         table_keys, existing_records = self._get_unique_keys(table_name)
 
         def filter_pairs(row):
@@ -131,6 +181,16 @@ class DBWrapper():
         return df_filtered
 
     def get_transactions_by_datetime_range(self, start_range=None, end_range=None):
+        """
+        Retrieves transactions within the specified datetime range.
+
+        Args:
+            start_range (datetime): Start of the datetime range.
+            end_range (datetime): End of the datetime range.
+
+        Returns:
+            transactions_df (pd.DataFrame): DataFrame containing transactions within the range.
+        """
         if end_range == None:
             end_range = datetime.now()
         if start_range == None:
@@ -144,6 +204,16 @@ class DBWrapper():
         return pd.read_sql_query(sql_query, self.conn)
     
     def get_trades_by_datetime_range(self, start_range=None, end_range=None):
+        """
+        Retrieves trades within the specified datetime range.
+
+        Args:
+            start_range (datetime): Start of the datetime range.
+            end_range (datetime): End of the datetime range.
+
+        Returns:
+            trades_df (pd.DataFrame): DataFrame containing trades within the range.
+        """
         if end_range == None:
             end_range = datetime.now()
         if start_range == None:
@@ -156,12 +226,3 @@ class DBWrapper():
             '''
         return pd.read_sql_query(sql_query, self.conn)
 
-        
-if __name__ == '__main__':
-    
-    config = read_json('config.json')
-    db_wrapper = DBWrapper(config['db_path'])
-
-    start = datetime(2022,1,1)
-    print(db_wrapper.get_transactions_by_datetime_range(start_range=start))
-    # print(db_wrapper.get_trades_by_datetime_range(start_range=start))

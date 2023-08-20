@@ -60,7 +60,11 @@ Create a `config.json` file in the project root with the following structure:
   "deribit": {
     "client_id": "your_client_id",
     "client_secret": "your_client_secret",
-    "client_url": "wss://www.deribit.com/ws/api/v2"
+    "client_url": "wss://www.deribit.com/ws/api/v2",
+        "currencies": [
+            "BTC",
+            "ETH"
+        ]
   }
 }
 ```
