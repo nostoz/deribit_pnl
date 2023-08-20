@@ -24,7 +24,8 @@ def main():
         end
     )
 
-    pnl_calc = PnLCalculator(db_wrapper=db_wrapper,
+    pnl_calc = PnLCalculator(config,
+                             db_wrapper=db_wrapper,
                              deribit_wrapper=deribit_wrapper,
                              start_range=start,
                              end_range=end)
@@ -35,19 +36,13 @@ def main():
     filtered_data = raw_data[(raw_data['datetime'] >= datetime.combine(date_range[0], datetime.min.time())) & (raw_data['datetime'] <= datetime.combine(date_range[1], datetime.min.time()))]
 
     st.write("PnL summary:")
-    st.dataframe(filtered_data.pivot_table(index='currency', values='usd_pnl', aggfunc=sum, margins=True))
+    st.dataframe(filtered_data.pivot_table(index='currency', values=['usd_pnl', 'usd_pnl_including_fees', 'usd_fees'], aggfunc=sum, margins=True))
 
     st.write("PnL by instrument:")
-    st.dataframe(filtered_data.pivot_table(index='instrument_name', values='usd_pnl', columns='currency', aggfunc=sum, margins=True))
+    st.dataframe(filtered_data.pivot_table(index='instrument_name', values=['usd_pnl', 'usd_pnl_including_fees', 'usd_fees'], columns='currency', aggfunc=sum, margins=True))
 
     if st.button("Refresh PnL"):
         pnl_calc.update_pnl()
-    # st.dataframe(filtered_data.pivot_table(index=['currency', 'instrument_name'], values='usd_pnl', aggfunc=sum, margins=True))
-
-    # positions = pd.concat([pd.DataFrame(deribit_wrapper.get_positions('BTC')['result']), 
-    #                        pd.DataFrame(deribit_wrapper.get_positions('ETH')['result'])], 
-    #                        axis=0)
-    # st.dataframe(positions)
 
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()

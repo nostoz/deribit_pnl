@@ -4,19 +4,13 @@ from db_wrapper import DBWrapper
 from utils import *
 import asyncio
 
-class Trade():
-    def __init__(self, type, entry_price, amount, expiry, cp=None, strike=None) -> None:
-        self.type = type
-        self.entry_price = entry_price
-        self.amount = amount
-        self.expiry = expiry
-        self.cp = cp
-        self.strike = strike
 
 class PnLCalculator():
-    def __init__(self, deribit_wrapper:DeribitApiWrapper,
+    def __init__(self, config,
+                       deribit_wrapper:DeribitApiWrapper,
                        db_wrapper:DBWrapper,
                        start_range, end_range) -> None:
+        self.config = config
         self.trades = pd.DataFrame()
         self.deribit_wrapper = deribit_wrapper
         self.db_wrapper = db_wrapper
@@ -37,6 +31,8 @@ class PnLCalculator():
                 #option
                 strike = instrument_breakdown[2]
                 cp = instrument_breakdown[3]
+            elif len(instrument_breakdown) == 1:
+                return 'SPOT'
 
             return 'option', convert_from_deribit_date(instrument_breakdown[1], as_string=False), strike, cp
     
@@ -44,15 +40,22 @@ class PnLCalculator():
         return side.split(' ')[1]
                    
     def _load_trades(self):
+
+        async def load_transactions_from_deribit():
+            for ccy in self.config['deribit']['currencies']:
+                transactions_from_deribit = await self.deribit_wrapper.get_transaction_log(currency=ccy, count=1000)
+                transactions_from_deribit = pd.DataFrame(transactions_from_deribit['result']['logs'])
+                self.db_wrapper.save_to_db(transactions_from_deribit, table_name="transaction_logs")
+
+        asyncio.run(load_transactions_from_deribit())
+        
         transactions = self.db_wrapper.get_transactions_by_datetime_range(self.start_calc_date,
                                                                           self.end_calc_date)
         transactions = transactions[(transactions['type'] == 'trade') & (~transactions['instrument_name'].str.contains('_'))].reset_index(drop=True)
-
         transactions[['trade_type', 'expiry','strike','cp']] = pd.DataFrame(transactions['instrument_name'].apply(self._calc_expiry).to_list())
         transactions['direction'] = transactions['side'].apply(self._get_direction)
         transactions['timestamp'] = transactions['timestamp'].apply(int)
         transactions['datetime'] = transactions['timestamp'].apply(unix_ms_to_datetime)
-
         self.trades = transactions
 
     def _get_trades(self):
@@ -98,7 +101,6 @@ class PnLCalculator():
         for ccy, ccy_px in zip(ccy_list, results):
             self.instrument_live_prices[ccy] = ccy_px
 
-
     async def _update_instrument_price(self, instrument):
         _, expiry, _, _ = self._calc_expiry(instrument)
 
@@ -114,7 +116,7 @@ class PnLCalculator():
         return result['result']['index_price']
 
 
-    def usd_pnl_by_trade(self, trade):
+    def usd_pnl_by_trade(self, trade, include_fees=True):
         usd_pnl = None
         if trade['trade_type'] == 'option':
             usd_pnl = (self.instrument_live_prices[trade['instrument_name']] * self.instrument_live_prices[trade['currency']] \
@@ -124,29 +126,17 @@ class PnLCalculator():
             usd_pnl =  (self.instrument_live_prices[trade['instrument_name']] -  trade['price']) * trade['amount'] / trade['index_price']
         usd_pnl = usd_pnl  * (1 if trade['direction'] == 'buy' else -1)
 
-        return usd_pnl
+        usd_fees = trade['commission'] * trade['index_price']
+        return usd_pnl, usd_pnl - usd_fees, usd_fees
+    
+    def usd_fee_by_trade(self, trade):
+        fee_usd = None
     
     def update_pnl(self):
         asyncio.run(self.update_live_prices())
 
         for idx, trade in self.trades.iterrows():
-            self.trades.loc[idx, 'usd_pnl'] = self.usd_pnl_by_trade(trade)
-
-if __name__ == '__main__':
-    
-    config = read_json('config.json')
-    db_wrapper = DBWrapper(config['db_path'])
-    deribit_wrapper = DeribitApiWrapper(config)
-
-    start = datetime(2022,8,1)
-    end = datetime.now()
-
-    pnl = PnLCalculator(db_wrapper=db_wrapper,
-                        deribit_wrapper=deribit_wrapper,
-                        start_range=start,
-                        end_range=end)
-    
-    pnl.update_pnl()
-    calcs = pnl._get_trades()
-    print(calcs.pivot_table(index='instrument_name', values='usd_pnl', columns='currency', aggfunc=sum, margins=True))
-    # calcs.to_csv('calcs.csv')
+            usd_pnl, usd_pnl_including_fees, usd_fees = self.usd_pnl_by_trade(trade)
+            self.trades.loc[idx, 'usd_pnl'] = usd_pnl
+            self.trades.loc[idx, 'usd_pnl_including_fees'] = usd_pnl_including_fees
+            self.trades.loc[idx, 'usd_fees'] = usd_fees
