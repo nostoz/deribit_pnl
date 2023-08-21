@@ -65,6 +65,16 @@ class PnLCalculator():
             str: Direction of the trade (buy/sell).
         """
         return side.split(' ')[1]
+    
+    def _process_transactions_from_db(self, transactions:pd.DataFrame):
+        transactions = transactions[(transactions['type'] == 'trade') & (~transactions['instrument_name'].str.contains('_'))].reset_index(drop=True)
+        transactions[['trade_type', 'expiry','strike','cp']] = pd.DataFrame(transactions['instrument_name'].apply(self._calc_expiry).to_list())
+        transactions['direction'] = transactions['side'].apply(self._get_direction)
+        transactions['timestamp'] = transactions['timestamp'].apply(int)
+        transactions['datetime'] = transactions['timestamp'].apply(unix_ms_to_datetime)
+        transactions.loc[transactions['trade_type'] == 'future', 'amount'] = transactions.loc[transactions['trade_type'] == 'future', 'amount'] / transactions.loc[transactions['trade_type'] == 'future', 'index_price']
+
+        return transactions
                    
     def _load_trades(self):
         """
@@ -80,12 +90,7 @@ class PnLCalculator():
         
         transactions = self.db_wrapper.get_transactions_by_datetime_range(self.start_calc_date,
                                                                           self.end_calc_date)
-        transactions = transactions[(transactions['type'] == 'trade') & (~transactions['instrument_name'].str.contains('_'))].reset_index(drop=True)
-        transactions[['trade_type', 'expiry','strike','cp']] = pd.DataFrame(transactions['instrument_name'].apply(self._calc_expiry).to_list())
-        transactions['direction'] = transactions['side'].apply(self._get_direction)
-        transactions['timestamp'] = transactions['timestamp'].apply(int)
-        transactions['datetime'] = transactions['timestamp'].apply(unix_ms_to_datetime)
-        self.trades = transactions
+        self.trades = self._process_transactions_from_db(transactions)
 
     def _get_trades(self):
         """
@@ -128,7 +133,7 @@ class PnLCalculator():
         tasks_instruments = [self._update_instrument_price(instrument) for instrument in instruments]
         tasks_ccy = [self._update_ccy_price(ccy) for ccy in ccy_list]
 
-        batch_size = 25
+        batch_size = 20
         num_batches = len(tasks_instruments) // batch_size + (1 if len(tasks_instruments) % batch_size > 0 else 0)
 
         for batch_idx in range(num_batches):
@@ -200,12 +205,12 @@ class PnLCalculator():
                        - trade['price'] * trade['index_price']) \
                         * trade['amount']
         elif trade['trade_type'] == 'future':
-            usd_pnl =  (self.instrument_live_prices[trade['instrument_name']] -  trade['price']) * trade['amount'] / trade['index_price']
+            usd_pnl =  (self.instrument_live_prices[trade['instrument_name']] -  trade['price']) * trade['amount'] 
         usd_pnl = usd_pnl  * (1 if trade['direction'] == 'buy' else -1)
 
         usd_fees = trade['commission'] * trade['index_price']
         return usd_pnl, usd_pnl - usd_fees, usd_fees
-    
+        
     def update_pnl(self):
         """
         Updates PnL for all trades.
@@ -217,3 +222,79 @@ class PnLCalculator():
             self.trades.loc[idx, 'usd_pnl'] = usd_pnl
             self.trades.loc[idx, 'usd_pnl_including_fees'] = usd_pnl_including_fees
             self.trades.loc[idx, 'usd_fees'] = usd_fees
+        
+        positions = self.calculate_positions()
+        return positions
+    
+    def calculate_positions(self, currency='usd'):
+        if currency == 'usd':
+            self.trades.loc[self.trades['trade_type'] == 'option', 'price'] = self.trades.loc[self.trades['trade_type'] == 'option', 'price']\
+                                                                * (self.trades.loc[self.trades['trade_type'] == 'option', 'index_price'])
+        positions = pd.DataFrame() 
+        for instrument in self.trades['instrument_name'].unique():
+            trades_subset = self.trades[self.trades['instrument_name'] == instrument].sort_values(by='timestamp', ascending=True).reset_index(drop=True)
+            for idx, row in trades_subset.iterrows():
+                trades_subset.loc[idx, 'buy'] = trades_subset[trades_subset['direction'] == 'buy'].loc[0:idx, 'amount'].sum()
+                trades_subset.loc[idx, 'sell'] = trades_subset[trades_subset['direction'] == 'sell'].loc[0:idx, 'amount'].sum()
+                trades_subset.loc[idx, 'long/short'] = 'long' if trades_subset.loc[idx, 'buy'] > trades_subset.loc[idx, 'sell'] else 'short'
+
+                buy_amount_subset = trades_subset[trades_subset['direction'] == 'buy'].loc[0:idx, 'amount']
+                buy_price_subset = trades_subset[trades_subset['direction'] == 'buy'].loc[0:idx, 'price']
+                sell_amount_subset = trades_subset[trades_subset['direction'] == 'sell'].loc[0:idx, 'amount']
+                sell_price_subset = trades_subset[trades_subset['direction'] == 'sell'].loc[0:idx, 'price']
+                
+                if not buy_amount_subset.empty:
+                    trades_subset.loc[idx, 'avg_long'] = buy_amount_subset.dot(buy_price_subset) / buy_amount_subset.sum()
+                else:
+                    trades_subset.loc[idx, 'avg_long'] = 0
+
+                if not sell_amount_subset.empty:
+                    trades_subset.loc[idx, 'avg_short'] = sell_amount_subset.dot(sell_price_subset) / sell_amount_subset.sum()
+                else:
+                    trades_subset.loc[idx, 'avg_short'] = 0
+                
+            last_idx = trades_subset.index[-1]
+            trades_subset.loc[last_idx, 'avg_long_to_short'] = trades_subset.loc[(trades_subset['buy'] < trades_subset['sell']).index[-1], 'avg_long']
+            trades_subset.loc[last_idx, 'avg_short_to_long'] = trades_subset.loc[(trades_subset['sell'] < trades_subset['buy']).index[-1], 'avg_short']
+            
+
+            last_row = trades_subset.iloc[last_idx]
+            if last_row['long/short'] == 'long':
+                trades_subset.loc[last_idx, 'realized_pl'] = (last_row['avg_short'] - last_row['avg_long_to_short']) * last_row['sell'] 
+            else:
+                trades_subset.loc[last_idx, 'realized_pl'] = (last_row['avg_short_to_long'] - last_row['avg_long']) * last_row['buy']
+
+            # print(trades_subset)
+            live_price = self.instrument_live_prices[instrument] * (1 if last_row['trade_type'] == 'future' else self.instrument_live_prices[last_row['currency']])
+            trades_subset.loc[last_idx, 'unrealized_pl'] = (live_price - last_row['avg_long']) * last_row['buy'] \
+                                                         + (last_row['avg_short'] - live_price) * last_row['sell'] \
+                                                         - trades_subset.loc[last_idx, 'realized_pl']
+            
+            # if trades_subset.loc[0, 'trade_type'] == 'option':
+            #     trades_subset.loc[last_idx, 'realized_pl'] = trades_subset.loc[last_idx, 'realized_pl']  * self.instrument_live_prices[last_row['currency']]
+            #     trades_subset.loc[last_idx, 'unrealized_pl'] = trades_subset.loc[last_idx, 'unrealized_pl'] * self.instrument_live_prices[last_row['currency']]
+
+            positions = pd.concat([positions, pd.DataFrame(trades_subset.loc[last_idx]).T], axis=0)
+            # print(trades_subset)
+
+        return positions
+        
+        
+
+if __name__ == "__main__":
+    config = read_json('config.json')
+    db_wrapper = DBWrapper(config['db_path'])
+    deribit_wrapper = DeribitApiWrapper(config)
+    start = datetime(2023, 8, 1)
+    end = datetime.now()
+
+    pnl_calc = PnLCalculator(config,
+                             db_wrapper=db_wrapper,
+                             deribit_wrapper=deribit_wrapper,
+                             start_range=start,
+                             end_range=end)
+    
+    positions = pnl_calc.calculate_positions()
+    print(positions)
+    print(positions['realized_pl'].sum())
+    print(positions['unrealized_pl'].sum())

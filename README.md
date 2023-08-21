@@ -1,4 +1,4 @@
-# Deribit PnL Calculator App (realized + unrealized)
+# Deribit PnL Calculator (realized + unrealized)
 
 This is a Streamlit app that calculates and displays Profit and Loss (PnL) information for trades on the Deribit cryptocurrency exchange. It utilizes the Deribit API to fetch trade and price data, and a SQLite database to store transaction records. The app displays PnL summaries by currency and instrument, and allows users to refresh the PnL calculations.
 
